@@ -86,3 +86,65 @@ def test_reflected_operations():
     assert np.allclose(d.data, np.array([5.0, 2.5]))
     d.sum().backward()
     assert np.allclose(c.grad.data, np.array([-2.5, -0.625]))
+
+
+def test_tensor_ops_match_pytorch():
+    """Test that our tensor operations produce same gradients as PyTorch."""
+    import torch
+
+    # Test element-wise ops
+    a_np = np.random.randn(3, 4).astype(np.float64)
+    b_np = np.random.randn(3, 4).astype(np.float64)
+
+    a_t = Tensor(a_np, requires_grad=True)
+    b_t = Tensor(b_np, requires_grad=True)
+
+    a_th = torch.tensor(a_np, requires_grad=True)
+    b_th = torch.tensor(b_np, requires_grad=True)
+
+    # Test add
+    c_t = a_t + b_t
+    c_th = a_th + b_th
+    assert np.allclose(c_t.data, c_th.detach().numpy())
+
+    c_t.sum().backward()
+    c_th.sum().backward()
+    assert np.allclose(a_t.grad.data, a_th.grad.numpy())
+    assert np.allclose(b_t.grad.data, b_th.grad.numpy())
+
+    # Test matmul
+    x_np = np.random.randn(2, 3).astype(np.float64)
+    y_np = np.random.randn(3, 4).astype(np.float64)
+
+    x_t = Tensor(x_np, requires_grad=True)
+    y_t = Tensor(y_np, requires_grad=True)
+
+    x_th = torch.tensor(x_np, requires_grad=True)
+    y_th = torch.tensor(y_np, requires_grad=True)
+
+    z_t = x_t @ y_t
+    z_th = x_th @ y_th
+    assert np.allclose(z_t.data, z_th.detach().numpy())
+
+    z_t.sum().backward()
+    z_th.sum().backward()
+    assert np.allclose(x_t.grad.data, x_th.grad.numpy())
+    assert np.allclose(y_t.grad.data, y_th.grad.numpy())
+
+
+def test_relu_match_pytorch():
+    """Test that ReLU produces same gradients as PyTorch."""
+    import torch
+
+    x_np = np.random.randn(4, 5).astype(np.float64)
+    x_t = Tensor(x_np, requires_grad=True)
+    x_th = torch.tensor(x_np, requires_grad=True)
+
+    y_t = x_t.relu()
+    y_th = torch.relu(x_th)
+
+    assert np.allclose(y_t.data, y_th.detach().numpy())
+
+    y_t.sum().backward()
+    y_th.sum().backward()
+    assert np.allclose(x_t.grad.data, x_th.grad.numpy())
