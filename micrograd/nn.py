@@ -1,11 +1,12 @@
 import random
-from micrograd.engine import Value
+import numpy as np
+from micrograd.engine import Tensor
 
 class Module:
 
     def zero_grad(self):
         for p in self.parameters():
-            p.grad = 0
+            p.grad = Tensor(np.zeros_like(p.data))
 
     def parameters(self):
         return []
@@ -13,8 +14,8 @@ class Module:
 class Neuron(Module):
 
     def __init__(self, nin, nonlin=True):
-        self.w = [Value(random.uniform(-1,1)) for _ in range(nin)]
-        self.b = Value(0)
+        self.w = [Tensor(random.uniform(-1,1), requires_grad=True) for _ in range(nin)]
+        self.b = Tensor(0.0, requires_grad=True)
         self.nonlin = nonlin
 
     def __call__(self, x):
