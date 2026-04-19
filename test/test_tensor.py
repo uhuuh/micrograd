@@ -64,3 +64,12 @@ def test_sum_backward():
     b = a.sum()
     b.backward()
     assert np.array_equal(a.grad.data, np.array([1.0, 1.0, 1.0]))
+
+def test_broadcast_add_backward():
+    a = Tensor(np.array([1.0, 2.0, 3.0]), requires_grad=True)
+    b = Tensor(np.array([4.0]), requires_grad=True)  # broadcasts to [4.0, 4.0, 4.0]
+    c = a + b
+    assert np.array_equal(c.data, np.array([5.0, 6.0, 7.0]))
+    c.backward()
+    assert np.array_equal(a.grad.data, np.array([1.0, 1.0, 1.0]))
+    assert np.array_equal(b.grad.data, np.array([3.0]))

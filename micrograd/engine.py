@@ -31,14 +31,26 @@ class Function:
 class Add(Function):
     @staticmethod
     def forward(ctx, a, b):
+        ctx._a_shape = a.data.shape
+        ctx._b_shape = b.data.shape
         ctx.save_for_backward(a, b)
+        # Use numpy broadcasting for forward
         return Tensor(a.data + b.data, requires_grad=a.requires_grad or b.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
         a, b = ctx.saved_tensors
-        grad_a = grad_output.data * np.ones_like(a.data)
-        grad_b = grad_output.data * np.ones_like(b.data)
+        # Sum gradient over dimensions that were broadcast
+        out_shape = np.broadcast_shapes(ctx._a_shape, ctx._b_shape)
+        grad_a = grad_output.data
+        grad_b = grad_output.data
+        # Sum over dims where a was broadcast (a_shape[i] == 1 and out_shape[i] > 1)
+        for i in range(len(out_shape)):
+            if ctx._a_shape[i] == 1 and out_shape[i] > 1:
+                grad_a = np.sum(grad_a, axis=i, keepdims=True)
+        for i in range(len(out_shape)):
+            if ctx._b_shape[i] == 1 and out_shape[i] > 1:
+                grad_b = np.sum(grad_b, axis=i, keepdims=True)
         return Tensor(grad_a), Tensor(grad_b)
 
 
