@@ -38,3 +38,23 @@ def test_relu_backward():
     b = a.relu()
     b.backward()
     assert np.array_equal(a.grad.data, np.array([0.0, 1.0, 0.0, 1.0]))
+
+def test_matmul_forward():
+    a = Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+    b = Tensor(np.array([[5.0, 6.0], [7.0, 8.0]]))
+    c = a @ b
+    expected = np.array([[19.0, 22.0], [43.0, 50.0]])
+    assert np.array_equal(c.data, expected)
+
+def test_matmul_backward():
+    a = Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]), requires_grad=True)
+    b = Tensor(np.array([[5.0, 6.0], [7.0, 8.0]]), requires_grad=True)
+    c = a @ b
+    c.backward()
+    # dC = [[1,1],[1,1]] (gradient of sum)
+    # dA = dC @ b.T = [[1,1],[1,1]] @ [[5,7],[6,8]] = [[11,15],[11,15]]
+    # dB = a.T @ dC = [[1,3],[2,4]] @ [[1,1],[1,1]] = [[4,4],[6,6]]
+    expected_grad_a = np.array([[11.0, 15.0], [11.0, 15.0]])
+    expected_grad_b = np.array([[4.0, 4.0], [6.0, 6.0]])
+    assert np.array_equal(a.grad.data, expected_grad_a)
+    assert np.array_equal(b.grad.data, expected_grad_b)

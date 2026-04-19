@@ -116,6 +116,22 @@ class Pow(Function):
         return Tensor(exponent * (a.data ** (exponent - 1)) * grad_output.data), None
 
 
+class MatMul(Function):
+    @staticmethod
+    def forward(ctx, a, b):
+        ctx.save_for_backward(a, b)
+        return Tensor(a.data @ b.data, requires_grad=a.requires_grad or b.requires_grad)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, b = ctx.saved_tensors
+        # grad_a = grad @ b.T
+        # grad_b = a.T @ grad
+        grad_a = grad_output.data @ b.data.swapaxes(-1, -2)
+        grad_b = a.data.swapaxes(-1, -2) @ grad_output.data
+        return Tensor(grad_a), Tensor(grad_b)
+
+
 class Tensor:
     def __init__(self, data, requires_grad=False):
         self.data = np.array(data, dtype=np.float64)
@@ -159,6 +175,9 @@ class Tensor:
 
     def __pow__(self, exponent):
         return Pow.apply(self, exponent)
+
+    def __matmul__(self, other):
+        return MatMul.apply(self, other)
 
     def backward(self):
         """Compute gradient of this tensor with respect to leaf tensors."""
