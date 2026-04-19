@@ -73,3 +73,16 @@ def test_broadcast_add_backward():
     c.backward()
     assert np.array_equal(a.grad.data, np.array([1.0, 1.0, 1.0]))
     assert np.array_equal(b.grad.data, np.array([3.0]))
+
+def test_reflected_operations():
+    a = Tensor(np.array([1.0, 2.0, 3.0]), requires_grad=True)
+    b = 5.0 - a  # rsub
+    assert np.array_equal(b.data, np.array([4.0, 3.0, 2.0]))
+    b.sum().backward()
+    assert np.array_equal(a.grad.data, np.array([-1.0, -1.0, -1.0]))
+
+    c = Tensor(np.array([2.0, 4.0]), requires_grad=True)
+    d = 10.0 / c  # rtruediv
+    assert np.allclose(d.data, np.array([5.0, 2.5]))
+    d.sum().backward()
+    assert np.allclose(c.grad.data, np.array([-2.5, -0.625]))
