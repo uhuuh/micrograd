@@ -58,3 +58,9 @@ def test_matmul_backward():
     expected_grad_b = np.array([[4.0, 4.0], [6.0, 6.0]])
     assert np.array_equal(a.grad.data, expected_grad_a)
     assert np.array_equal(b.grad.data, expected_grad_b)
+
+def test_sum_backward():
+    a = Tensor(np.array([1.0, 2.0, 3.0]), requires_grad=True)
+    b = a.sum()
+    b.backward()
+    assert np.array_equal(a.grad.data, np.array([1.0, 1.0, 1.0]))

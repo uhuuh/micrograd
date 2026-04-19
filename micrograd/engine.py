@@ -132,6 +132,30 @@ class MatMul(Function):
         return Tensor(grad_a), Tensor(grad_b)
 
 
+class Sum(Function):
+    @staticmethod
+    def forward(ctx, a, dim=None, keepdim=False):
+        ctx._dim = dim
+        ctx._keepdim = keepdim
+        ctx.save_for_backward(a)
+        out = np.sum(a.data, axis=dim, keepdims=keepdim)
+        return Tensor(out, requires_grad=a.requires_grad)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a = ctx.saved_tensors[0]
+        dim = ctx._dim
+        keepdim = ctx._keepdim
+        if dim is None:
+            return Tensor(np.ones_like(a.data) * grad_output.data)
+        shape = list(a.data.shape)
+        shape[dim] = 1
+        grad_a = np.ones(shape) * grad_output.data
+        if not keepdim:
+            grad_a = np.squeeze(grad_a, axis=dim)
+        return Tensor(grad_a)
+
+
 class Tensor:
     def __init__(self, data, requires_grad=False):
         self.data = np.array(data, dtype=np.float64)
@@ -178,6 +202,9 @@ class Tensor:
 
     def __matmul__(self, other):
         return MatMul.apply(self, other)
+
+    def sum(self, dim=None, keepdim=False):
+        return Sum.apply(self, dim, keepdim)
 
     def backward(self):
         """Compute gradient of this tensor with respect to leaf tensors."""
