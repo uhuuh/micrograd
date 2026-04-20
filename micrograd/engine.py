@@ -31,27 +31,12 @@ class Function:
 class Add(Function):
     @staticmethod
     def forward(ctx, a, b):
-        ctx._a_shape = a.data.shape
-        ctx._b_shape = b.data.shape
         ctx.save_for_backward(a, b)
-        # Use numpy broadcasting for forward
         return Tensor(a.data + b.data, requires_grad=a.requires_grad or b.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
-        a, b = ctx.saved_tensors
-        # Sum gradient over dimensions that were broadcast
-        out_shape = np.broadcast_shapes(ctx._a_shape, ctx._b_shape)
-        grad_a = grad_output.data
-        grad_b = grad_output.data
-        # Sum over dims where a was broadcast (a_shape[i] == 1 and out_shape[i] > 1)
-        for i in range(len(out_shape)):
-            if ctx._a_shape[i] == 1 and out_shape[i] > 1:
-                grad_a = np.sum(grad_a, axis=i, keepdims=True)
-        for i in range(len(out_shape)):
-            if ctx._b_shape[i] == 1 and out_shape[i] > 1:
-                grad_b = np.sum(grad_b, axis=i, keepdims=True)
-        return Tensor(grad_a), Tensor(grad_b)
+        return grad_output, grad_output
 
 
 class Mul(Function):
@@ -63,9 +48,7 @@ class Mul(Function):
     @staticmethod
     def backward(ctx, grad_output):
         a, b = ctx.saved_tensors
-        grad_a = b.data * grad_output.data
-        grad_b = a.data * grad_output.data
-        return Tensor(grad_a), Tensor(grad_b)
+        return Tensor(b.data * grad_output.data, copy=False), Tensor(a.data * grad_output.data, copy=False)
 
 
 class Sub(Function):
@@ -76,8 +59,7 @@ class Sub(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        a, b = ctx.saved_tensors
-        return grad_output, Tensor(-grad_output.data)
+        return grad_output, Tensor(-grad_output.data, copy=False)
 
 
 class Div(Function):
@@ -89,19 +71,32 @@ class Div(Function):
     @staticmethod
     def backward(ctx, grad_output):
         a, b = ctx.saved_tensors
-        grad_a = grad_output.data / b.data
-        grad_b = -a.data * grad_output.data / (b.data ** 2)
-        return Tensor(grad_a), Tensor(grad_b)
+        return Tensor(grad_output.data / b.data, copy=False), Tensor(-a.data * grad_output.data / (b.data ** 2), copy=False)
+
+
+class Slice(Function):
+    @staticmethod
+    def forward(ctx, a, key):
+        ctx.save_for_backward(a, key)
+        return Tensor(a.data[key], requires_grad=a.requires_grad)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, key = ctx.saved_tensors
+        out = np.zeros_like(a.data)
+        out[key] = grad_output.data
+        return Tensor(out, copy=False)
 
 
 class Neg(Function):
     @staticmethod
     def forward(ctx, a):
+        ctx.save_for_backward(a)
         return Tensor(-a.data, requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
-        return Tensor(-grad_output.data)
+        return Tensor(-grad_output.data, copy=False)
 
 
 class ReLU(Function):
@@ -113,7 +108,7 @@ class ReLU(Function):
     @staticmethod
     def backward(ctx, grad_output):
         a, = ctx.saved_tensors
-        return Tensor(grad_output.data * (a.data > 0).astype(float))
+        return Tensor(grad_output.data * (a.data > 0).astype(float), copy=False)
 
 
 class Pow(Function):
@@ -125,7 +120,7 @@ class Pow(Function):
     @staticmethod
     def backward(ctx, grad_output):
         a, exponent = ctx.saved_tensors
-        return Tensor(exponent * (a.data ** (exponent - 1)) * grad_output.data), None
+        return Tensor(exponent * (a.data ** (exponent - 1)) * grad_output.data, copy=False), None
 
 
 class MatMul(Function):
@@ -137,40 +132,36 @@ class MatMul(Function):
     @staticmethod
     def backward(ctx, grad_output):
         a, b = ctx.saved_tensors
-        # grad_a = grad @ b.T
-        # grad_b = a.T @ grad
-        grad_a = grad_output.data @ b.data.swapaxes(-1, -2)
-        grad_b = a.data.swapaxes(-1, -2) @ grad_output.data
-        return Tensor(grad_a), Tensor(grad_b)
+        return Tensor(grad_output.data @ b.data.swapaxes(-1, -2), copy=False), Tensor(a.data.swapaxes(-1, -2) @ grad_output.data, copy=False)
 
 
 class Sum(Function):
     @staticmethod
     def forward(ctx, a, dim=None, keepdim=False):
-        ctx._dim = dim
-        ctx._keepdim = keepdim
-        ctx.save_for_backward(a)
+        ctx.save_for_backward(a, dim, keepdim)
         out = np.sum(a.data, axis=dim, keepdims=keepdim)
         return Tensor(out, requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
-        a = ctx.saved_tensors[0]
-        dim = ctx._dim
-        keepdim = ctx._keepdim
+        a, dim, keepdim = ctx.saved_tensors
         if dim is None:
-            return Tensor(np.ones_like(a.data) * grad_output.data)
-        shape = list(a.data.shape)
-        shape[dim] = 1
-        grad_a = np.ones(shape) * grad_output.data
-        if not keepdim:
-            grad_a = np.squeeze(grad_a, axis=dim)
-        return Tensor(grad_a)
+            return Tensor(np.ones_like(a.data) * grad_output.data, copy=False)
+        else:
+            shape = list(a.data.shape)
+            shape[dim] = 1
+            grad_a = np.ones(shape) * grad_output.data
+            if not keepdim:
+                grad_a = np.squeeze(grad_a, axis=dim)
+            return Tensor(grad_a, copy=False)
 
 
 class Tensor:
-    def __init__(self, data, requires_grad=False):
-        self.data = np.array(data, dtype=np.float64)
+    def __init__(self, data, requires_grad=False, copy=True):
+        if copy:
+            self.data = np.array(data, dtype=np.float64)
+        else:
+            self.data = np.asarray(data, dtype=np.float64)
         self.requires_grad = requires_grad
         self.grad = None
         self._ctx = None
@@ -215,68 +206,47 @@ class Tensor:
     def __matmul__(self, other):
         return MatMul.apply(self, other)
 
+    def __getitem__(self, key):
+        return Slice.apply(self, key)
+
     def sum(self, dim=None, keepdim=False):
         return Sum.apply(self, dim, keepdim)
 
     def backward(self):
         """Compute gradient of this tensor with respect to leaf tensors."""
         if self._ctx is None:
-            # This tensor is a leaf (no ops applied), just set grad to 1
-            self.grad = Tensor(np.ones_like(self.data))
+            self.grad = Tensor(np.ones_like(self.data), copy=False)
             return
 
-        # Build topological order of the computation graph
+        # Build topological order using DFS (post-order: children before parent)
         topo = []
-        visited = set()
-        def build_topo(v):
-            if id(v) not in visited:
-                visited.add(id(v))
-                if v._ctx is not None:
-                    for child in v._ctx.saved_tensors:
-                        build_topo(child)
-                topo.append(v)
-        build_topo(self)
 
-        # Initialize gradient at output = 1
-        self.grad = Tensor(np.ones_like(self.data))
-        grad_table = {id(self): self.grad}
+        def dfs(v):
+            if id(v) in visited:
+                return
+            visited.add(id(v))
+            if v._ctx is not None:
+                for child in v._ctx.saved_tensors:
+                    if isinstance(child, Tensor):
+                        dfs(child)
+            topo.append(v)
+
+        visited = set()
+        dfs(self)
+
+        # Initialize gradients for all tensors in topo
+        for v in topo:
+            v.grad = None
 
         # Process in reverse topological order
+        self.grad = Tensor(np.ones_like(self.data), copy=False)
         for v in reversed(topo):
             if v._ctx is not None:
-                grad_fn = v._ctx._grad_fn
-                inputs = v._ctx.saved_tensors
-                grad_output = grad_table.get(id(v), Tensor(np.zeros_like(v.data)))
-
-                # Call the op's backward
-                grads = grad_fn.backward(v._ctx, grad_output)
-                if not isinstance(grads, tuple):
-                    grads = (grads,)
-
-                # Accumulate gradients for each input
-                for inp, g in zip(inputs, grads):
-                    if inp.requires_grad and g is not None:
-                        if id(inp) in grad_table:
-                            grad_table[id(inp)].data += g.data
-                        else:
-                            grad_table[id(inp)] = g
-
-        # Propagate gradients from grad_table to actual tensors
-        for tensor_id, grad in grad_table.items():
-            # Find the tensor by iterating (in practice, tensors are leaf nodes)
-            pass  # grad_table already has correct gradients
-
-        # Final pass: set .grad on all visited tensors that require grad
-        visited_ids = set()
-        def mark_visited(v):
-            if id(v) not in visited_ids:
-                visited_ids.add(id(v))
-                if v._ctx is not None:
-                    for child in v._ctx.saved_tensors:
-                        mark_visited(child)
-        mark_visited(self)
-
-        # Now set .grad from grad_table
-        for v in topo:
-            if v.requires_grad and id(v) in grad_table:
-                v.grad = grad_table[id(v)]
+                ret = v._ctx._grad_fn.backward(v._ctx, v.grad)
+                if ret is None:
+                    continue
+                if not isinstance(ret, tuple):
+                    ret = (ret,)
+                for t, g in zip(v._ctx.saved_tensors, ret):
+                    if g is not None and isinstance(t, Tensor):
+                        t.grad = g
