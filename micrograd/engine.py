@@ -1,4 +1,5 @@
 import numpy as np
+from collections import deque
 
 
 class Function:
@@ -6,16 +7,21 @@ class Function:
 
     def __init__(self):
         self.saved_tensors = ()
+        self.saved_data = []
 
     def save_for_backward(self, *tensors):
         self.saved_tensors = tensors
+
+    def save_data_for_backward(self, *data):
+        self.saved_data = list(data)
 
     @staticmethod
     def forward(ctx, *inputs):
         raise NotImplementedError
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output) -> tuple["Tensor | None", ...]:
+        """Backward pass. Must return a tuple of gradients (Tensor or None) for each input."""
         raise NotImplementedError
 
     @classmethod
@@ -77,12 +83,14 @@ class Div(Function):
 class Slice(Function):
     @staticmethod
     def forward(ctx, a, key):
-        ctx.save_for_backward(a, key)
+        ctx.save_for_backward(a)
+        ctx.save_data_for_backward(key)
         return Tensor(a.data[key], requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
-        a, key = ctx.saved_tensors
+        a, = ctx.saved_tensors
+        key, = ctx.saved_data
         out = np.zeros_like(a.data)
         out[key] = grad_output.data
         return Tensor(out, copy=False)
@@ -114,12 +122,14 @@ class ReLU(Function):
 class Pow(Function):
     @staticmethod
     def forward(ctx, a, exponent):
-        ctx.save_for_backward(a, exponent)
+        ctx.save_for_backward(a)
+        ctx.save_data_for_backward(exponent)
         return Tensor(a.data ** exponent, requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
-        a, exponent = ctx.saved_tensors
+        a, = ctx.saved_tensors
+        exponent, = ctx.saved_data
         return Tensor(exponent * (a.data ** (exponent - 1)) * grad_output.data, copy=False), None
 
 
@@ -138,13 +148,15 @@ class MatMul(Function):
 class Sum(Function):
     @staticmethod
     def forward(ctx, a, dim=None, keepdim=False):
-        ctx.save_for_backward(a, dim, keepdim)
+        ctx.save_for_backward(a)
+        ctx.save_data_for_backward(dim, keepdim)
         out = np.sum(a.data, axis=dim, keepdims=keepdim)
         return Tensor(out, requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
-        a, dim, keepdim = ctx.saved_tensors
+        a, = ctx.saved_tensors
+        dim, keepdim = ctx.saved_data
         if dim is None:
             return Tensor(np.ones_like(a.data) * grad_output.data, copy=False)
         else:
@@ -213,40 +225,53 @@ class Tensor:
         return Sum.apply(self, dim, keepdim)
 
     def backward(self):
-        """Compute gradient of this tensor with respect to leaf tensors."""
+        """Compute gradient using BFS with reference counting from saved_tensors."""
         if self._ctx is None:
             self.grad = Tensor(np.ones_like(self.data), copy=False)
             return
 
-        # Build topological order using DFS (post-order: children before parent)
-        topo = []
+        # Build num_outputs dict from saved_tensors with cycle detection
+        num_outputs = {}
+        visiting = set()  # For cycle detection (currently being visited)
 
-        def dfs(v):
-            if id(v) in visited:
+        def build_num_outputs(v):
+            if id(v) in num_outputs:
                 return
-            visited.add(id(v))
+            if id(v) in visiting:
+                raise RuntimeError("Cycle detected in computation graph")
+            visiting.add(id(v))
+            num_outputs[id(v)] = 0
             if v._ctx is not None:
                 for child in v._ctx.saved_tensors:
                     if isinstance(child, Tensor):
-                        dfs(child)
-            topo.append(v)
+                        build_num_outputs(child)
+                        num_outputs[id(child)] += 1
+            visiting.remove(id(v))
 
-        visited = set()
-        dfs(self)
+        build_num_outputs(self)
 
-        # Initialize gradients for all tensors in topo
-        for v in topo:
-            v.grad = None
-
-        # Process in reverse topological order
+        # Initialize gradients
         self.grad = Tensor(np.ones_like(self.data), copy=False)
-        for v in reversed(topo):
-            if v._ctx is not None:
-                ret = v._ctx._grad_fn.backward(v._ctx, v.grad)
-                if ret is None:
-                    continue
-                if not isinstance(ret, tuple):
-                    ret = (ret,)
-                for t, g in zip(v._ctx.saved_tensors, ret):
-                    if g is not None and isinstance(t, Tensor):
+
+        # BFS: compute gradients as we traverse
+        queue = deque([self])
+
+        while queue:
+            v = queue.popleft()
+            if v._ctx is None:
+                continue
+
+            grads = v._ctx._grad_fn.backward(v._ctx, v.grad)
+
+            for t, g in zip(v._ctx.saved_tensors, grads):
+                if g is not None and isinstance(t, Tensor):
+                    # Accumulate gradient (handle multiple outputs using same input)
+                    if t.grad is None:
                         t.grad = g
+                    else:
+                        t.grad = Tensor(t.grad.data + g.data, copy=False)
+
+                    # Decrement output count and enqueue when all outputs processed
+                    num_outputs[id(t)] -= 1
+                    if num_outputs[id(t)] == 0:
+                        queue.append(t)
