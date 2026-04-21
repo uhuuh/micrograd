@@ -100,6 +100,13 @@ class LeNet5(Module):
         self.fc3_b = Tensor(np.zeros(10), requires_grad=True)
 
     def __call__(self, x):
+        # x: list of (1, 28, 28) tensors or single (batch, 1, 28, 28) tensor
+        if isinstance(x, list):
+            # Convert list of images to batch tensor with channel dimension
+            batch = len(x)
+            x = np.stack([xi.data for xi in x], axis=0)  # (batch, 28, 28)
+            x = x[:, np.newaxis, :, :]  # (batch, 1, 28, 28)
+            x = Tensor(x, requires_grad=True)
         # x: (batch, 1, 28, 28)
         x = self.conv1(x)
         x = x.relu()

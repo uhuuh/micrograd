@@ -133,3 +133,161 @@ def test_relu_match_pytorch():
     y_t.sum().backward()
     y_th.sum().backward()
     assert np.allclose(x_t.grad.data, x_th.grad.numpy())
+
+
+# Tests for nn module (based on demo.ipynb)
+import random
+from micrograd.nn import Neuron, Layer, MLP
+
+def test_neuron():
+    """Test Neuron creation and forward pass."""
+    neuron = Neuron(2)
+    assert len(neuron.w) == 2
+    assert neuron.b is not None
+    assert neuron.nonlin == True
+
+    # Forward pass
+    x = [Tensor(1.0), Tensor(2.0)]
+    out = neuron(x)
+    assert out is not None
+
+def test_neuron_no_activation():
+    """Test Neuron without activation (linear)."""
+    neuron = Neuron(2, nonlin=False)
+    assert neuron.nonlin == False
+
+    x = [Tensor(1.0), Tensor(2.0)]
+    out = neuron(x)
+    assert out is not None
+
+def test_layer():
+    """Test Layer creation and forward pass."""
+    layer = Layer(2, 3)
+    assert len(layer.neurons) == 3
+
+    x = [Tensor(1.0), Tensor(2.0)]
+    out = layer(x)
+    assert len(out) == 3
+
+def test_layer_single_neuron():
+    """Test Layer with single neuron returns tensor not list."""
+    layer = Layer(2, 1)
+    x = [Tensor(1.0), Tensor(2.0)]
+    out = layer(x)
+    assert not isinstance(out, list)
+
+def test_mlp():
+    """Test MLP creation."""
+    mlp = MLP(2, [4, 1])
+    assert len(mlp.layers) == 2
+    assert mlp.parameters() is not None
+
+def test_mlp_forward():
+    """Test MLP forward pass."""
+    mlp = MLP(2, [4, 1])
+    x = [Tensor(1.0), Tensor(2.0)]
+    out = mlp(x)
+    assert out is not None
+
+def test_mlp_parameters():
+    """Test MLP parameters method."""
+    mlp = MLP(2, [16, 1])
+    params = mlp.parameters()
+    assert len(params) > 0
+
+def test_mlp_zero_grad():
+    """Test MLP zero_grad method."""
+    mlp = MLP(2, [4, 1])
+    x = [Tensor(1.0), Tensor(2.0)]
+    out = mlp(x)
+    out.backward()
+
+    # After backward, all params should have grad
+    for p in mlp.parameters():
+        assert p.grad is not None
+
+    # zero_grad should set all grads to zero
+    mlp.zero_grad()
+    for p in mlp.parameters():
+        assert np.allclose(p.grad.data, np.zeros_like(p.grad.data))
+
+def test_mlp_training_loop():
+    """Test MLP training loop (like in demo.ipynb)."""
+    # Create simple dataset
+    X = np.array([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]])
+    y = np.array([1, 1, -1, -1])  # binary classification targets
+
+    mlp = MLP(2, [8, 1])
+
+    # Training loop
+    for epoch in range(50):
+        # Forward
+        losses = []
+        for xi, yi in zip(X, y):
+            x_tensor = [Tensor(x) for x in xi]
+            score = mlp(x_tensor)
+            # SVM loss: (1 + -yi*score).relu()
+            loss = (Tensor(1.0) + Tensor(-yi) * score).relu()
+            losses.append(loss)
+
+        total_loss = sum(losses) * (1.0 / len(losses))
+
+        # Backward
+        mlp.zero_grad()
+        total_loss.backward()
+
+        # Update
+        for p in mlp.parameters():
+            p.data -= 0.1 * p.grad.data
+
+    # Final forward pass - predictions should be reasonable
+    predictions = []
+    for xi in X:
+        x_tensor = [Tensor(x) for x in xi]
+        score = mlp(x_tensor)
+        predictions.append(score.data > 0)
+
+    # At least 3 out of 4 should be correct
+    correct = sum([(p == (y[i] > 0)) for i, p in enumerate(predictions)])
+    assert correct >= 3
+
+def test_mlp_backward():
+    """Test MLP backward pass."""
+    mlp = MLP(2, [4, 1])
+
+    x = [Tensor(1.0), Tensor(2.0)]
+    score = mlp(x)
+
+    score.backward()
+
+    # All parameters should have gradients
+    for p in mlp.parameters():
+        assert p.grad is not None
+
+def test_neuron_parameters():
+    """Test Neuron parameters method."""
+    neuron = Neuron(3)
+    params = neuron.parameters()
+    assert len(params) == 4  # 3 weights + 1 bias
+
+def test_layer_parameters():
+    """Test Layer parameters method."""
+    layer = Layer(2, 3)
+    params = layer.parameters()
+    assert len(params) == 9  # 3 neurons * (2 weights + 1 bias)
+
+def test_cycle_detection():
+    """Test that backward detects cycles in computation graph."""
+    a = Tensor([1.0], requires_grad=True)
+    b = Tensor([2.0], requires_grad=True)
+    c = a + b
+
+    # Manually create a cycle: c depends on itself
+    c._ctx.saved_tensors = (c,)
+    c.out_degree = 1
+
+    try:
+        c.backward()
+        assert False, "Should have raised RuntimeError for cycle"
+    except RuntimeError as e:
+        assert "Cycle detected" in str(e)

@@ -30,7 +30,11 @@ class Function:
         ctx = cls()
         output = cls.forward(ctx, *inputs)
         output._ctx = ctx
+        output.is_leaf = False  # Operation outputs are not leaves
         ctx._grad_fn = cls
+        for t in inputs:
+            if isinstance(t, Tensor):
+                t.out_degree += 1
         return output
 
 
@@ -93,7 +97,7 @@ class Slice(Function):
         key, = ctx.saved_data
         out = np.zeros_like(a.data)
         out[key] = grad_output.data
-        return Tensor(out, copy=False)
+        return (Tensor(out, copy=False),)
 
 
 class Neg(Function):
@@ -104,7 +108,7 @@ class Neg(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return Tensor(-grad_output.data, copy=False)
+        return (Tensor(-grad_output.data, copy=False),)
 
 
 class ReLU(Function):
@@ -116,7 +120,7 @@ class ReLU(Function):
     @staticmethod
     def backward(ctx, grad_output):
         a, = ctx.saved_tensors
-        return Tensor(grad_output.data * (a.data > 0).astype(float), copy=False)
+        return (Tensor(grad_output.data * (a.data > 0).astype(float), copy=False),)
 
 
 class Pow(Function):
@@ -158,14 +162,14 @@ class Sum(Function):
         a, = ctx.saved_tensors
         dim, keepdim = ctx.saved_data
         if dim is None:
-            return Tensor(np.ones_like(a.data) * grad_output.data, copy=False)
+            return (Tensor(np.ones_like(a.data) * grad_output.data, copy=False),)
         else:
             shape = list(a.data.shape)
             shape[dim] = 1
             grad_a = np.ones(shape) * grad_output.data
             if not keepdim:
                 grad_a = np.squeeze(grad_a, axis=dim)
-            return Tensor(grad_a, copy=False)
+            return (Tensor(grad_a, copy=False),)
 
 
 class Tensor:
@@ -177,6 +181,8 @@ class Tensor:
         self.requires_grad = requires_grad
         self.grad = None
         self._ctx = None
+        self.out_degree = 0
+        self.is_leaf = True  # Tensors created directly are leaves; operations set this to False
 
     def __add__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -221,57 +227,58 @@ class Tensor:
     def __getitem__(self, key):
         return Slice.apply(self, key)
 
+    def reshape(self, *shape):
+        return Tensor(self.data.reshape(*shape), requires_grad=self.requires_grad)
+
     def sum(self, dim=None, keepdim=False):
         return Sum.apply(self, dim, keepdim)
 
     def backward(self):
-        """Compute gradient using BFS with reference counting from saved_tensors."""
+        """Compute gradient using BFS with out_degree tracking and cycle detection."""
         if self._ctx is None:
             self.grad = Tensor(np.ones_like(self.data), copy=False)
             return
 
-        # Build num_outputs dict from saved_tensors with cycle detection
-        num_outputs = {}
-        visiting = set()  # For cycle detection (currently being visited)
-
-        def build_num_outputs(v):
-            if id(v) in num_outputs:
-                return
-            if id(v) in visiting:
-                raise RuntimeError("Cycle detected in computation graph")
-            visiting.add(id(v))
-            num_outputs[id(v)] = 0
-            if v._ctx is not None:
-                for child in v._ctx.saved_tensors:
-                    if isinstance(child, Tensor):
-                        build_num_outputs(child)
-                        num_outputs[id(child)] += 1
-            visiting.remove(id(v))
-
-        build_num_outputs(self)
-
-        # Initialize gradients
+        # Initialize gradient for root
         self.grad = Tensor(np.ones_like(self.data), copy=False)
 
-        # BFS: compute gradients as we traverse
+        # BFS: compute gradients using out_degree
         queue = deque([self])
+        visited = set()  # Track fully processed tensors
+        path = set()  # Track current traversal path for cycle detection
 
         while queue:
             v = queue.popleft()
+
             if v._ctx is None:
-                continue
+                continue  # skip leaf tensors
+
+            # Add to path before processing
+            path.add(id(v))
 
             grads = v._ctx._grad_fn.backward(v._ctx, v.grad)
 
             for t, g in zip(v._ctx.saved_tensors, grads):
                 if g is not None and isinstance(t, Tensor):
-                    # Accumulate gradient (handle multiple outputs using same input)
+                    tid = id(t)
+
+                    # Cycle detection: if tensor is in current path, we have a cycle
+                    if tid in path:
+                        raise RuntimeError("Cycle detected in computation graph")
+
+                    # Accumulate gradient
                     if t.grad is None:
                         t.grad = g
                     else:
                         t.grad = Tensor(t.grad.data + g.data, copy=False)
 
-                    # Decrement output count and enqueue when all outputs processed
-                    num_outputs[id(t)] -= 1
-                    if num_outputs[id(t)] == 0:
+                    # Decrement out_degree and enqueue when all outputs processed
+                    t.out_degree -= 1
+                    if t.out_degree == 0:
                         queue.append(t)
+
+            # Reset connection info after processing
+            v._ctx = None
+            # Move from path to visited
+            path.discard(id(v))
+            visited.add(id(v))
