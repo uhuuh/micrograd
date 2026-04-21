@@ -1,2 +1,40 @@
 .ipynb_checkpoints/
 .worktrees/
+
+# Shell configs
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+
+# Editor configs
+.idea/
+.vscode/
+.gitconfig
+.gitmodules
+.mcp.json
+.ripgreprc
+
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Data (MNIST cache)
+micrograd/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs temp
+docs/plan.txt
