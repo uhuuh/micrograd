@@ -36,12 +36,21 @@ class DataLoader:
         return (len(self.dataset) + self.batch_size - 1) // self.batch_size
 
 
-def load_mnist():
-    """Load MNIST dataset using sklearn."""
+def load_mnist(data_home=None):
+    """Load MNIST dataset using sklearn.
+
+    Args:
+        data_home: Directory to cache MNIST data. Defaults to ./data/
+    """
+    import os
     from sklearn.datasets import fetch_openml
 
+    if data_home is None:
+        data_home = os.path.join(os.path.dirname(__file__), 'data')
+    os.makedirs(data_home, exist_ok=True)
+
     # Fetch MNIST from OpenML
-    mnist = fetch_openml('mnist_784', version=1, as_frame=False)
+    mnist = fetch_openml('mnist_784', version=1, as_frame=False, data_home=data_home)
     X = mnist.data.reshape(-1, 28, 28).astype(np.float64)
     y = mnist.target.astype(np.int32)
 

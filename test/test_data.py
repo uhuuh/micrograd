@@ -37,3 +37,12 @@ def test_dataloader_no_shuffle():
     batches = list(loader)
     # First batch should be [0,1,2]
     assert np.array_equal(batches[0][0], [0, 1, 2])
+
+def test_load_mnist():
+    from micrograd.data import load_mnist
+    (X_train, y_train), (X_test, y_test) = load_mnist()
+    assert len(X_train) == 60000
+    assert len(X_test) == 10000
+    assert X_train.shape[1] == 28
+    assert X_train.shape[2] == 28
+    assert set(y_train) == set(range(10))
