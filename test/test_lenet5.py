@@ -1,7 +1,7 @@
 # test/test_lenet5.py
 import numpy as np
 from micrograd.engine import Tensor
-from micrograd.lenet5 import Conv2d, AvgPool2d
+from micrograd.lenet5 import Conv2d, AvgPool2d, LeNet5
 
 def test_conv2d_forward():
     # Input: (batch=1, channels=1, H=4, W=4)
@@ -26,3 +26,17 @@ def test_avgpool2d_forward():
     # Output: (1, 1, 2, 2)
     assert out.data.shape == (1, 1, 2, 2)
     assert np.allclose(out.data, 1.0)
+
+def test_lenet5_forward():
+    model = LeNet5()
+    # Input: batch of 2, 28x28 images
+    x = Tensor(np.random.randn(2, 1, 28, 28), requires_grad=True)
+    out = model(x)
+    # Output: (batch, 10)
+    assert out.data.shape == (2, 10)
+
+def test_lenet5_parameters():
+    model = LeNet5()
+    params = model.parameters()
+    # Should have conv weights + fc weights + biases
+    assert len(params) > 0

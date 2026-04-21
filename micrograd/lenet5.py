@@ -90,12 +90,14 @@ class LeNet5(Module):
         self.conv2 = Conv2d(6, 16, kernel_size=5)
         self.pool2 = AvgPool2d(kernel_size=2, stride=2)
 
-        # FC layers (using existing Layer class)
-        from micrograd.nn import Layer
+        # FC layers with proper batch matrix multiplication
         # After conv+pool: 16 channels * 4*4 = 256 features
-        self.fc1 = Layer(256, 120)
-        self.fc2 = Layer(120, 84)
-        self.fc3 = Layer(84, 10, nonlin=False)  # No activation on output
+        self.fc1_w = Tensor(np.random.randn(256, 120) * 0.1, requires_grad=True)
+        self.fc1_b = Tensor(np.zeros(120), requires_grad=True)
+        self.fc2_w = Tensor(np.random.randn(120, 84) * 0.1, requires_grad=True)
+        self.fc2_b = Tensor(np.zeros(84), requires_grad=True)
+        self.fc3_w = Tensor(np.random.randn(84, 10) * 0.1, requires_grad=True)
+        self.fc3_b = Tensor(np.zeros(10), requires_grad=True)
 
     def __call__(self, x):
         # x: (batch, 1, 28, 28)
@@ -107,19 +109,24 @@ class LeNet5(Module):
         x = x.relu()
         x = self.pool2(x)
 
-        # Flatten
+        # Flatten: (batch, 256)
         batch = x.data.shape[0]
         x = x.reshape(batch, -1)
 
-        x = self.fc1(x)
+        # FC1: (batch, 256) @ (256, 120) -> (batch, 120)
+        x = x @ self.fc1_w + self.fc1_b
         x = x.relu()
-        x = self.fc2(x)
+
+        # FC2: (batch, 120) @ (120, 84) -> (batch, 84)
+        x = x @ self.fc2_w + self.fc2_b
         x = x.relu()
-        x = self.fc3(x)
+
+        # FC3: (batch, 84) @ (84, 10) -> (batch, 10)
+        x = x @ self.fc3_w + self.fc3_b
         return x
 
     def parameters(self):
         return (self.conv1.parameters() + self.pool1.parameters() +
                 self.conv2.parameters() + self.pool2.parameters() +
-                self.fc1.parameters() + self.fc2.parameters() +
-                self.fc3.parameters())
+                [self.fc1_w, self.fc1_b, self.fc2_w, self.fc2_b,
+                 self.fc3_w, self.fc3_b])
