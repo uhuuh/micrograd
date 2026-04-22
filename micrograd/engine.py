@@ -180,7 +180,7 @@ class Tensor:
         self.requires_grad = requires_grad
         self.grad = None
         self._ctx = None
-        self.out_degree = 0
+        self.use_count = 0
 
     def __add__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
