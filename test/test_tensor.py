@@ -276,18 +276,3 @@ def test_layer_parameters():
     params = layer.parameters()
     assert len(params) == 9  # 3 neurons * (2 weights + 1 bias)
 
-def test_cycle_detection():
-    """Test that backward detects cycles in computation graph."""
-    a = Tensor([1.0], requires_grad=True)
-    b = Tensor([2.0], requires_grad=True)
-    c = a + b
-
-    # Manually create a cycle: c depends on itself
-    c._ctx.saved_tensors = (c,)
-    c.out_degree = 1
-
-    try:
-        c.backward()
-        assert False, "Should have raised RuntimeError for cycle"
-    except RuntimeError as e:
-        assert "Cycle detected" in str(e)

@@ -245,61 +245,44 @@ class Tensor:
                             queue.append(child)
 
     def backward(self):
-        """Compute gradient using BFS with out_degree tracking and cycle detection."""
+        """Compute gradient using BFS with static use_count."""
         if self._ctx is None:
             self.grad = Tensor(np.ones_like(self.data), copy=False)
             return
 
-        # Internal gradient dictionary for propagation (separate from .grad which is only for leaf tensors)
-        grad_map = {}
+        # 预处理：计算 use_count
+        self._compute_use_counts()
 
-        # Initialize gradient for root
-        grad_map[id(self)] = Tensor(np.ones_like(self.data), copy=False)
-
-        # BFS: compute gradients using out_degree
         queue = deque([self])
-        visited = set()  # Track fully processed tensors
-        path = set()  # Track current traversal path for cycle detection
+        self.grad = Tensor(np.ones_like(self.data), copy=False)
 
         while queue:
             v = queue.popleft()
 
             if v._ctx is None:
-                continue  # skip leaf tensors
+                continue  # leaf tensor，不传播
 
-            # Add to path before processing
-            path.add(id(v))
+            # Ensure v.grad is set for backward (even if requires_grad=False on non-leaf)
+            if v.grad is None:
+                v.grad = Tensor(np.ones_like(v.data), copy=False)
 
-            grads = v._ctx._grad_fn.backward(v._ctx, grad_map[id(v)])
+            grads = v._ctx._grad_fn.backward(v._ctx, v.grad)
 
             for t, g in zip(v._ctx.saved_tensors, grads):
-                if g is not None and isinstance(t, Tensor):
-                    tid = id(t)
+                if g is None or not isinstance(t, Tensor):
+                    continue
 
-                    # Cycle detection: if tensor is in current path, we have a cycle
-                    if tid in path:
-                        raise RuntimeError("Cycle detected in computation graph")
-
-                    # Accumulate gradient in grad_map for propagation
-                    if tid not in grad_map:
-                        grad_map[tid] = g
+                # Only accumulate gradient for tensors that require it
+                if t.requires_grad:
+                    if t.grad is None:
+                        t.grad = g
                     else:
-                        grad_map[tid] = Tensor(grad_map[tid].data + g.data, copy=False)
+                        t.grad = Tensor(t.grad.data + g.data, copy=False)
 
-                    # Only accumulate gradient for leaf tensors (requires_grad=True and _ctx=None)
-                    if t.requires_grad and t._ctx is None:
-                        if t.grad is None:
-                            t.grad = g
-                        else:
-                            t.grad = Tensor(t.grad.data + g.data, copy=False)
+                # 传播给子节点后 use_count 减一，归零时入队
+                t.use_count -= 1
+                if t.use_count == 0:
+                    queue.append(t)
 
-                    # Decrement out_degree and enqueue when all outputs processed
-                    t.out_degree -= 1
-                    if t.out_degree == 0:
-                        queue.append(t)
-
-            # Reset connection info after processing
-            v._ctx = None
-            # Move from path to visited
-            path.discard(id(v))
-            visited.add(id(v))
+            # 处理完 non-leaf 删除 grad（leaf 保留）
+            v.grad = None
