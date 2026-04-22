@@ -228,6 +228,22 @@ class Tensor:
     def sum(self, dim=None, keepdim=False):
         return Sum.apply(self, dim, keepdim)
 
+    def _compute_use_counts(self):
+        """预处理：从 root 开始，统计每个 tensor 被多少子节点依赖。"""
+        queue = deque([self])
+        visited = set()
+        while queue:
+            t = queue.popleft()
+            if id(t) in visited:
+                continue
+            visited.add(id(t))
+            if t._ctx is not None:
+                for child in t._ctx.saved_tensors:
+                    if isinstance(child, Tensor):
+                        child.use_count += 1
+                        if id(child) not in visited:
+                            queue.append(child)
+
     def backward(self):
         """Compute gradient using BFS with out_degree tracking and cycle detection."""
         if self._ctx is None:
