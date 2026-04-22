@@ -31,9 +31,6 @@ class Function:
         output = cls.forward(ctx, *inputs)
         output._ctx = ctx
         ctx._grad_fn = cls
-        for t in inputs:
-            if isinstance(t, Tensor):
-                t.out_degree += 1
         return output
 
 
