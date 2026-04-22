@@ -30,7 +30,6 @@ class Function:
         ctx = cls()
         output = cls.forward(ctx, *inputs)
         output._ctx = ctx
-        output.is_leaf = False  # Operation outputs are not leaves
         ctx._grad_fn = cls
         for t in inputs:
             if isinstance(t, Tensor):
@@ -182,7 +181,6 @@ class Tensor:
         self.grad = None
         self._ctx = None
         self.out_degree = 0
-        self.is_leaf = True  # Tensors created directly are leaves; operations set this to False
 
     def __add__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -239,8 +237,11 @@ class Tensor:
             self.grad = Tensor(np.ones_like(self.data), copy=False)
             return
 
+        # Internal gradient dictionary for propagation (separate from .grad which is only for leaf tensors)
+        grad_map = {}
+
         # Initialize gradient for root
-        self.grad = Tensor(np.ones_like(self.data), copy=False)
+        grad_map[id(self)] = Tensor(np.ones_like(self.data), copy=False)
 
         # BFS: compute gradients using out_degree
         queue = deque([self])
@@ -256,7 +257,7 @@ class Tensor:
             # Add to path before processing
             path.add(id(v))
 
-            grads = v._ctx._grad_fn.backward(v._ctx, v.grad)
+            grads = v._ctx._grad_fn.backward(v._ctx, grad_map[id(v)])
 
             for t, g in zip(v._ctx.saved_tensors, grads):
                 if g is not None and isinstance(t, Tensor):
@@ -266,11 +267,18 @@ class Tensor:
                     if tid in path:
                         raise RuntimeError("Cycle detected in computation graph")
 
-                    # Accumulate gradient
-                    if t.grad is None:
-                        t.grad = g
+                    # Accumulate gradient in grad_map for propagation
+                    if tid not in grad_map:
+                        grad_map[tid] = g
                     else:
-                        t.grad = Tensor(t.grad.data + g.data, copy=False)
+                        grad_map[tid] = Tensor(grad_map[tid].data + g.data, copy=False)
+
+                    # Only accumulate gradient for leaf tensors (requires_grad=True and _ctx=None)
+                    if t.requires_grad and t._ctx is None:
+                        if t.grad is None:
+                            t.grad = g
+                        else:
+                            t.grad = Tensor(t.grad.data + g.data, copy=False)
 
                     # Decrement out_degree and enqueue when all outputs processed
                     t.out_degree -= 1
