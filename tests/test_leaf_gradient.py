@@ -1,5 +1,5 @@
 import pytest
-from micrograd.engine import Tensor
+from micrograd import Tensor
 
 def test_leaf_tensor_accumulates_gradient():
     """Leaf tensor (requires_grad=True, _ctx=None) should accumulate gradient."""
@@ -9,7 +9,7 @@ def test_leaf_tensor_accumulates_gradient():
     z.backward()
 
     assert x.grad is not None
-    assert x.grad.data.tolist() == [2.0, 2.0, 2.0]
+    assert x.grad.numpy().tolist() == [2.0, 2.0, 2.0]
 
 def test_non_leaf_tensor_no_gradient():
     """Non-leaf tensor (operation output) should not store gradient."""
@@ -39,4 +39,4 @@ def test_shared_input_gradient_accumulation():
     w.backward()
 
     assert x.grad is not None
-    assert x.grad.data.tolist() == [7.0]  # 3 + 4
+    assert x.grad.numpy().tolist() == [7.0]  # 3 + 4

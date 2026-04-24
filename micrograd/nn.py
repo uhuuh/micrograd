@@ -1,12 +1,12 @@
 import random
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 
 class Module:
 
     def zero_grad(self):
         for p in self.parameters():
-            p.grad = Tensor(np.zeros_like(p.data))
+            p.grad = None
 
     def parameters(self):
         return []
