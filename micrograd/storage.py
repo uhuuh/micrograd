@@ -74,3 +74,55 @@ class CPUStorage(Storage):
             other._data[:] = self._data
         else:
             raise NotImplementedError("CUDA not yet implemented")
+
+    def __array__(self) -> np.ndarray:
+        return self._data
+
+    def __rmul__(self, other: float) -> "CPUStorage":
+        return CPUStorage(other * self._data)
+
+    def __mul__(self, other: float) -> "CPUStorage":
+        return CPUStorage(self._data * other)
+
+    def __rsub__(self, other: float) -> "CPUStorage":
+        return CPUStorage(other - self._data)
+
+    def __sub__(self, other) -> "CPUStorage":
+        if isinstance(other, CPUStorage):
+            return CPUStorage(self._data - other._data)
+        return CPUStorage(self._data - other)
+
+    def __add__(self, other) -> "CPUStorage":
+        if isinstance(other, CPUStorage):
+            return CPUStorage(self._data + other._data)
+        return CPUStorage(self._data + other)
+
+    def __isub__(self, other) -> "CPUStorage":
+        if isinstance(other, CPUStorage):
+            self._data -= other._data
+        else:
+            self._data -= other
+        return self
+
+    def __iadd__(self, other) -> "CPUStorage":
+        if isinstance(other, CPUStorage):
+            self._data += other._data
+        else:
+            self._data += other
+        return self
+
+    def __imul__(self, other: float) -> "CPUStorage":
+        self._data *= other
+        return self
+
+    def __lt__(self, other) -> np.ndarray:
+        return self._data < other
+
+    def __gt__(self, other) -> np.ndarray:
+        return self._data > other
+
+    def __le__(self, other) -> np.ndarray:
+        return self._data <= other
+
+    def __ge__(self, other) -> np.ndarray:
+        return self._data >= other

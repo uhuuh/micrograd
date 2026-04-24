@@ -27,6 +27,10 @@ class Tensor:
     def data(self) -> Storage:
         return self._storage
 
+    @data.setter
+    def data(self, value: Storage):
+        self._storage = value
+
     @property
     def device(self) -> str:
         return self._storage.device
