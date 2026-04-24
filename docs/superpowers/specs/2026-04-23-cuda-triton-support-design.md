@@ -17,12 +17,151 @@ micrograd 是一个教学性质的 autograd 引擎，当前仅支持 CPU (numpy 
 micrograd/
 ├── tensor.py          # Tensor 类 + backward (原 engine.py)
 ├── function.py        # Function 基类
-├── ops.py             # Add, Mul, Sub, Div, ReLU, MatMul, Sum 等算子
+├── ops.py             # Add, Mul, Sub, Div, ReLU, MatMul, Sum 等算子定义
+├── dispatch.py        # OpRegistry: 算子注册 + 设备选择 (新增)
+├── kernels/
+│   ├── __init__.py    # 导出所有 kernel
+│   ├── cpu.py         # CPU numpy kernel 实现 (新增)
+│   └── cuda.py        # CUDA Triton kernel 实现 (原 triton_ops.py)
 ├── storage.py         # Storage, CPUStorage, CUDAStorage (新增)
-├── triton_ops.py      # Triton kernels (新增)
 ├── cuda_utils.py      # CUDA 设备管理 (新增)
 └── nn.py              # 神经网络模块 (保持不变)
 ```
+
+---
+
+## 0. Dispatch 层 (`dispatch.py`)
+
+算子注册表，根据设备和算子名自动选择注册的 kernel。
+
+### OpRegistry
+
+```python
+from typing import Callable, Dict, Any
+import functools
+
+class OpRegistry:
+    """
+    算子注册表，根据 device 自动 dispatch 到对应 kernel。
+    
+    支持两种注册方式：
+    1. 装饰器: @registry.register_op("add", "cpu")
+    2. 直接调用: registry.register("add", "cpu", forward_fn, backward_fn)
+    """
+    
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._registry: Dict[str, Dict[str, dict]] = {}
+        return cls._instance
+    
+    def register_op(self, op_name: str, device: str, is_backward: bool = False):
+        """
+        装饰器：注册 forward 或 backward kernel。
+        
+        Usage:
+            @registry.register_op("add", "cpu")
+            def add_forward(a, b):
+                ...
+            
+            @registry.register_op("add", "cpu", is_backward=True)
+            def add_backward(grad_out, a, b):
+                ...
+        """
+        def decorator(fn: Callable) -> Callable:
+            if op_name not in self._registry:
+                self._registry[op_name] = {}
+            if device not in self._registry[op_name]:
+                self._registry[op_name][device] = {"forward": None, "backward": None}
+            
+            key = "backward" if is_backward else "forward"
+            self._registry[op_name][device][key] = fn
+            
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+            return wrapper
+        return decorator
+    
+    def register(self, op_name: str, device: str, 
+                 forward: Callable, backward: Callable):
+        """直接注册 forward/backward kernel"""
+        if op_name not in self._registry:
+            self._registry[op_name] = {}
+        self._registry[op_name][device] = {"forward": forward, "backward": backward}
+    
+    def dispatch(self, op_name: str, device: str) -> tuple[Callable, Callable]:
+        """根据 op_name 和 device 选择 kernel"""
+        if op_name not in self._registry:
+            raise KeyError(f"Op '{op_name}' not registered")
+        if device not in self._registry[op_name]:
+            raise KeyError(f"Op '{op_name}' has no kernel for device '{device}'")
+        entry = self._registry[op_name][device]
+        return entry["forward"], entry["backward"]
+    
+    def get_devices(self, op_name: str) -> list[str]:
+        """获取某算子支持的所有设备"""
+        return list(self._registry.get(op_name, {}).keys())
+    
+    def is_registered(self, op_name: str, device: str) -> bool:
+        """检查算子是否在某设备上注册"""
+        return op_name in self._registry and device in self._registry[op_name]
+
+
+# 全局单例
+registry = OpRegistry()
+```
+
+### 装饰器注册示例
+
+```python
+# kernels/cpu.py
+from micrograd.dispatch import registry
+from micrograd.storage import CPUStorage
+import numpy as np
+
+@registry.register_op("add", "cpu")
+def add_forward(a: CPUStorage, b: CPUStorage) -> CPUStorage:
+    return CPUStorage(a.numpy() + b.numpy())
+
+@registry.register_op("add", "cpu", is_backward=True)
+def add_backward(grad_output: CPUStorage, a: CPUStorage, b: CPUStorage) -> tuple[CPUStorage, CPUStorage]:
+    return grad_output, grad_output
+
+@registry.register_op("mul", "cpu")
+def mul_forward(a: CPUStorage, b: CPUStorage) -> CPUStorage:
+    return CPUStorage(a.numpy() * b.numpy())
+
+@registry.register_op("mul", "cpu", is_backward=True)
+def mul_backward(grad_output: CPUStorage, a: CPUStorage, b: CPUStorage) -> tuple[CPUStorage, CPUStorage]:
+    return (CPUStorage(b.numpy() * grad_output.numpy()),
+            CPUStorage(a.numpy() * grad_output.numpy()))
+
+# kernels/cuda.py
+from micrograd.dispatch import registry
+from micrograd.storage import CUDAStorage
+import triton
+import triton.language as tl
+
+@registry.register_op("add", "cuda")
+def add_forward(a: CUDAStorage, b: CUDAStorage) -> CUDAStorage:
+    # Triton kernel launch
+    ...
+
+@registry.register_op("add", "cuda", is_backward=True)
+def add_backward(grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage) -> tuple[CUDAStorage, CUDAStorage]:
+    return grad_output, grad_output
+```
+
+### 优势
+
+1. **解耦**: Function 不直接引用 kernel，通过 registry dispatch
+2. **可扩展**: 新增设备只需注册新 kernel，不修改 Function
+3. **装饰器简洁**: kernel 函数定义处直接注册，代码更清晰
+4. **延迟加载**: CUDA kernel 在需要时才注册，避免无 GPU 时导入失败
+5. **统一接口**: 所有 kernel 遵循相同签名，便于测试和替换
 
 ---
 
@@ -151,7 +290,62 @@ def is_cuda_available() -> bool:
 
 ---
 
-## 3. Triton 算子 (`triton_ops.py`)
+## 3. Kernel 实现 (`kernels/`)
+
+### 3.1 CPU Kernels (`kernels/cpu.py`)
+
+```python
+import numpy as np
+from .storage import CPUStorage
+
+# === Add ===
+def add_forward(a: CPUStorage, b: CPUStorage) -> CPUStorage:
+    return CPUStorage(a.numpy() + b.numpy())
+
+def add_backward(grad_output: CPUStorage, a: CPUStorage, b: CPUStorage) -> tuple[CPUStorage, CPUStorage]:
+    # Add backward: identity
+    return grad_output, grad_output
+
+# === Mul ===
+def mul_forward(a: CPUStorage, b: CPUStorage) -> CPUStorage:
+    return CPUStorage(a.numpy() * b.numpy())
+
+def mul_backward(grad_output: CPUStorage, a: CPUStorage, b: CPUStorage) -> tuple[CPUStorage, CPUStorage]:
+    return CPUStorage(b.numpy() * grad_output.numpy()), CPUStorage(a.numpy() * grad_output.numpy())
+
+# === ReLU ===
+def relu_forward(a: CPUStorage) -> CPUStorage:
+    return CPUStorage(np.maximum(0, a.numpy()))
+
+def relu_backward(grad_output: CPUStorage, a: CPUStorage) -> CPUStorage:
+    return CPUStorage(grad_output.numpy() * (a.numpy() > 0).astype(float))
+
+# === MatMul ===
+def matmul_forward(a: CPUStorage, b: CPUStorage) -> CPUStorage:
+    return CPUStorage(a.numpy() @ b.numpy())
+
+def matmul_backward(grad_output: CPUStorage, a: CPUStorage, b: CPUStorage) -> tuple[CPUStorage, CPUStorage]:
+    return (CPUStorage(grad_output.numpy() @ b.numpy().swapaxes(-1, -2)),
+            CPUStorage(a.numpy().swapaxes(-1, -2) @ grad_output.numpy()))
+
+# === Sum ===
+def sum_forward(a: CPUStorage, dim=None, keepdim=False) -> CPUStorage:
+    out = np.sum(a.numpy(), axis=dim, keepdims=keepdim)
+    return CPUStorage(out)
+
+def sum_backward(grad_output: CPUStorage, a: CPUStorage, dim, keepdim) -> CPUStorage:
+    if dim is None:
+        return CPUStorage(np.ones_like(a.numpy()) * grad_output.numpy())
+    else:
+        shape = list(a.numpy().shape)
+        shape[dim] = 1
+        grad_a = np.ones(shape) * grad_output.numpy()
+        if not keepdim:
+            grad_a = np.squeeze(grad_a, axis=dim)
+        return CPUStorage(grad_a)
+```
+
+### 3.2 CUDA Kernels (`kernels/cuda.py`)
 
 Triton kernel 实现，逐个添加。
 
@@ -464,128 +658,99 @@ class Function:
 
 ## 6. 算子改造 (`ops.py`)
 
-每个算子检查设备并选择实现。
+每个算子通过 dispatch 自动选择 kernel，不再直接引用具体实现。
 
 ```python
 from .function import Function
 from .tensor import Tensor
-from .storage import CPUStorage
+from .dispatch import registry
 
 class Add(Function):
+    name = "add"
+    
     @staticmethod
     def forward(ctx, a, b):
         ctx.save_for_backward(a, b)
-        if a.device == "cuda":
-            from .triton_ops import triton_add
-            storage = triton_add(a.data, b.data)
-            return Tensor(storage, requires_grad=a.requires_grad or b.requires_grad)
-        else:
-            return Tensor(CPUStorage(a.data.numpy() + b.data.numpy()),
-                          requires_grad=a.requires_grad or b.requires_grad)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # Add backward: identity
-        return grad_output, grad_output
-
-class Mul(Function):
-    @staticmethod
-    def forward(ctx, a, b):
-        ctx.save_for_backward(a, b)
-        if a.device == "cuda":
-            from .triton_ops import triton_mul
-            storage = triton_mul(a.data, b.data)
-            return Tensor(storage, requires_grad=a.requires_grad or b.requires_grad)
-        else:
-            return Tensor(CPUStorage(a.data.numpy() * b.data.numpy()),
-                          requires_grad=a.requires_grad or b.requires_grad)
+        forward_fn, _ = registry.dispatch("add", a.device)
+        storage = forward_fn(a.data, b.data)
+        return Tensor(storage, requires_grad=a.requires_grad or b.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
         a, b = ctx.saved_tensors
-        if grad_output.device == "cuda":
-            from .triton_ops import triton_mul_backward
-            grad_a, grad_b = triton_mul_backward(grad_output.data, a.data, b.data)
-            return Tensor(grad_a), Tensor(grad_b)
-        else:
-            return (Tensor(CPUStorage(b.data.numpy() * grad_output.data.numpy())),
-                    Tensor(CPUStorage(a.data.numpy() * grad_output.data.numpy())))
+        _, backward_fn = registry.dispatch("add", grad_output.device)
+        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
+        return Tensor(grad_a), Tensor(grad_b)
+
+class Mul(Function):
+    name = "mul"
+    
+    @staticmethod
+    def forward(ctx, a, b):
+        ctx.save_for_backward(a, b)
+        forward_fn, _ = registry.dispatch("mul", a.device)
+        storage = forward_fn(a.data, b.data)
+        return Tensor(storage, requires_grad=a.requires_grad or b.requires_grad)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, b = ctx.saved_tensors
+        _, backward_fn = registry.dispatch("mul", grad_output.device)
+        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
+        return Tensor(grad_a), Tensor(grad_b)
 
 class ReLU(Function):
+    name = "relu"
+    
     @staticmethod
     def forward(ctx, a):
         ctx.save_for_backward(a)
-        if a.device == "cuda":
-            from .triton_ops import triton_relu
-            storage = triton_relu(a.data)
-            return Tensor(storage, requires_grad=a.requires_grad)
-        else:
-            return Tensor(CPUStorage(np.maximum(0, a.data.numpy())), requires_grad=a.requires_grad)
+        forward_fn, _ = registry.dispatch("relu", a.device)
+        storage = forward_fn(a.data)
+        return Tensor(storage, requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
         a, = ctx.saved_tensors
-        if grad_output.device == "cuda":
-            from .triton_ops import triton_relu_backward
-            grad_a = triton_relu_backward(grad_output.data, a.data)
-            return (Tensor(grad_a),)
-        else:
-            return (Tensor(CPUStorage(grad_output.data.numpy() * (a.data.numpy() > 0).astype(float))),)
+        _, backward_fn = registry.dispatch("relu", grad_output.device)
+        grad_a = backward_fn(grad_output.data, a.data)
+        return (Tensor(grad_a),)
 
 class MatMul(Function):
+    name = "matmul"
+    
     @staticmethod
     def forward(ctx, a, b):
         ctx.save_for_backward(a, b)
-        if a.device == "cuda":
-            from .triton_ops import triton_matmul
-            storage = triton_matmul(a.data, b.data)
-            return Tensor(storage, requires_grad=a.requires_grad or b.requires_grad)
-        else:
-            return Tensor(CPUStorage(a.data.numpy() @ b.data.numpy()),
-                          requires_grad=a.requires_grad or b.requires_grad)
+        forward_fn, _ = registry.dispatch("matmul", a.device)
+        storage = forward_fn(a.data, b.data)
+        return Tensor(storage, requires_grad=a.requires_grad or b.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
         a, b = ctx.saved_tensors
-        if grad_output.device == "cuda":
-            from .triton_ops import triton_matmul_backward
-            grad_a, grad_b = triton_matmul_backward(grad_output.data, a.data, b.data)
-            return Tensor(grad_a), Tensor(grad_b)
-        else:
-            return (Tensor(CPUStorage(grad_output.data.numpy() @ b.data.numpy().swapaxes(-1, -2))),
-                    Tensor(CPUStorage(a.data.numpy().swapaxes(-1, -2) @ grad_output.data.numpy())))
+        _, backward_fn = registry.dispatch("matmul", grad_output.device)
+        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
+        return Tensor(grad_a), Tensor(grad_b)
 
 class Sum(Function):
+    name = "sum"
+    
     @staticmethod
     def forward(ctx, a, dim=None, keepdim=False):
         ctx.save_for_backward(a)
         ctx.save_data_for_backward(dim, keepdim)
-        if a.device == "cuda":
-            from .triton_ops import triton_sum
-            storage = triton_sum(a.data, dim, keepdim)
-            return Tensor(storage, requires_grad=a.requires_grad)
-        else:
-            out = np.sum(a.data.numpy(), axis=dim, keepdims=keepdim)
-            return Tensor(CPUStorage(out), requires_grad=a.requires_grad)
+        forward_fn, _ = registry.dispatch("sum", a.device)
+        storage = forward_fn(a.data, dim, keepdim)
+        return Tensor(storage, requires_grad=a.requires_grad)
 
     @staticmethod
     def backward(ctx, grad_output):
         a, = ctx.saved_tensors
         dim, keepdim = ctx.saved_data
-        if grad_output.device == "cuda":
-            from .triton_ops import triton_sum_backward
-            grad_a = triton_sum_backward(grad_output.data, a.data, dim, keepdim)
-            return (Tensor(grad_a),)
-        else:
-            if dim is None:
-                return (Tensor(CPUStorage(np.ones_like(a.data.numpy()) * grad_output.data.numpy())),)
-            else:
-                shape = list(a.data.numpy().shape)
-                shape[dim] = 1
-                grad_a = np.ones(shape) * grad_output.data.numpy()
-                if not keepdim:
-                    grad_a = np.squeeze(grad_a, axis=dim)
-                return (Tensor(CPUStorage(grad_a)),)
+        _, backward_fn = registry.dispatch("sum", grad_output.device)
+        grad_a = backward_fn(grad_output.data, a.data, dim, keepdim)
+        return (Tensor(grad_a),)
 ```
 
 ---
