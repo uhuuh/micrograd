@@ -22,6 +22,7 @@ class Tensor:
         self.grad = None
         self._ctx = None
         self._use_count = 0
+        self.grad_fn = None
 
     @property
     def data(self) -> Storage:
