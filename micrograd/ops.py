@@ -12,11 +12,7 @@ class Add(Node):
 
     @staticmethod
     def _backward(ctx, grad_output):
-        a, b = ctx.saved_tensors
-        _, backward_fn = registry.dispatch("add", grad_output.device)
-        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
-        from .tensor import Tensor
-        return Tensor(grad_a), Tensor(grad_b)
+        return grad_output, grad_output
 
 
 class Mul(Node):
@@ -44,11 +40,8 @@ class Sub(Node):
 
     @staticmethod
     def _backward(ctx, grad_output):
-        a, b = ctx.saved_tensors
-        _, backward_fn = registry.dispatch("sub", grad_output.device)
-        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
         from .tensor import Tensor
-        return Tensor(grad_a), Tensor(grad_b)
+        return grad_output, Tensor(-grad_output.data.numpy(), copy=False)
 
 
 class Div(Node):
@@ -76,11 +69,8 @@ class Neg(Node):
 
     @staticmethod
     def _backward(ctx, grad_output):
-        a, = ctx.saved_tensors
-        _, backward_fn = registry.dispatch("neg", grad_output.device)
-        grad_a = backward_fn(grad_output.data, a.data)
         from .tensor import Tensor
-        return (Tensor(grad_a),)
+        return Tensor(-grad_output.data.numpy(), copy=False)
 
 
 class ReLU(Node):
