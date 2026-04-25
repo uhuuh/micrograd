@@ -38,6 +38,7 @@ class Node:
         self.next: set[Node] = set() # downstream nodes (output grad_fn)
         self.leaf: set[Tensor] = set() # leaf tensors (inputs without grad_fn)
         self.backward_fn = None      # Function class (Add, Mul, etc.)
+        self.inputs = ()             # original inputs (to match backward output order)
     
     def save_for_backward(self, *tensors):
         self.saved_tensors = tensors
@@ -55,6 +56,8 @@ class Node:
 - `leaf`: Input tensor has no `grad_fn` (leaf tensor with requires_grad=True)
 
 **next**: Points to downstream nodes, used to determine when a node can execute (when next is empty)
+
+**inputs**: Tracks original input order to match backward output order (handles non-tensor inputs like exponent)
 
 ## Function Class
 
@@ -74,6 +77,7 @@ class Function:
     def apply(cls, *inputs):
         """Auto-create Node (ctx), call forward, build computation graph"""
         ctx = Node()  # auto-create ctx
+        ctx.inputs = inputs  # save original inputs
         
         needs_grad = any(t.requires_grad for t in inputs if isinstance(t, Tensor)) and not no_grad.enabled
         
@@ -162,35 +166,34 @@ def backward(self, grad_output):
         
         grads = node.backward_fn.backward(node, grad)
         
-        saved = list(node.saved_tensors)
-        leaf_tensors = list(node.leaf)
-        prev_nodes = list(node.prev)
+        # Distribute gradients according to original inputs order
+        for i, (inp, g) in enumerate(zip(node.inputs, grads)):
+            if g is None:
+                continue
+            if not isinstance(inp, Tensor) or not inp.requires_grad:
+                continue
+            
+            if inp.grad_fn is None:  # leaf tensor
+                if inp.grad is None:
+                    inp.grad = g
+                else:
+                    inp.grad = inp.grad + g
+            else:
+                # Non-leaf: propagate to upstream node when ready
+                inp.grad_fn.next.discard(node)
+                if len(inp.grad_fn.next) == 0:
+                    queue.append((inp.grad_fn, g))
         
-        grad_idx = 0
-        for t in saved:
-            if t.requires_grad:
-                g = grads[grad_idx]
-                if g is not None:
-                    if t.grad_fn is None:  # leaf
-                        if t.grad is None:
-                            t.grad = g
-                        else:
-                            t.grad = t.grad + g
-                grad_idx += 1
-        
-        for prev_node in prev_nodes:
-            prev_node.next.discard(node)
-            if len(prev_node.next) == 0:
-                queue.append((prev_node, grads[grad_idx]))
-            grad_idx += 1
-        
+        # Cleanup references
         node.prev.clear()
         node.leaf.clear()
+        node.inputs = ()
 ```
 
 **Key points**:
-- Single BFS using `next` set to determine when node can execute
-- Clean prev/next/leaf references after execution
+- Single BFS: propagate to upstream node when its `next` set becomes empty
+- Use `inputs` to match backward output order (handles non-tensor inputs like exponent)
+- Clean prev/leaf/inputs references after execution
 - Gradients accumulate to leaf tensor's grad attribute
 
 ## Tensor Class Changes
