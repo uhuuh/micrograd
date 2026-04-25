@@ -1,7 +1,7 @@
 import pytest
 from micrograd.node import Node
 from micrograd.tensor import Tensor
-from micrograd import no_grad
+from micrograd.no_grad import no_grad
 from micrograd.storage import CPUStorage
 import numpy as np
 
@@ -68,14 +68,14 @@ def test_apply_no_grad_mode():
     a = Tensor([2.0], requires_grad=True)
     b = Tensor([3.0], requires_grad=True)
     
-    with no_grad.no_grad():
+    with no_grad():
         out = AddNode.apply(a, b)
     
     assert out.requires_grad == False
 
 
 def test_apply_no_grad_decorator():
-    @no_grad.no_grad()
+    @no_grad()
     def compute():
         a = Tensor([2.0], requires_grad=True)
         b = Tensor([3.0], requires_grad=True)
