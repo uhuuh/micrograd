@@ -32,13 +32,12 @@ Refactor the backward propagation to separate computation graph nodes (Node) fro
 ```python
 class Node:
     def __init__(self):
-        self.saved_tensors = ()      # tensors needed for backward
-        self.saved_data = []         # other data (exponent, dim, etc.)
+        self.saved_tensors = ()      # tensor inputs (order matches backward output)
+        self.saved_data = []         # non-tensor inputs (exponent, dim, keepdim, etc.)
         self.prev: set[Node] = set() # upstream nodes (input grad_fn)
         self.next: set[Node] = set() # downstream nodes (output grad_fn)
         self.leaf: set[Tensor] = set() # leaf tensors (inputs without grad_fn)
         self.backward_fn = None      # Function class (Add, Mul, etc.)
-        self.inputs = ()             # original inputs (to match backward output order)
     
     def save_for_backward(self, *tensors):
         self.saved_tensors = tensors
@@ -57,7 +56,9 @@ class Node:
 
 **next**: Points to downstream nodes, used to determine when a node can execute (when next is empty)
 
-**inputs**: Tracks original input order to match backward output order (handles non-tensor inputs like exponent)
+**saved_tensors/saved_data separation**:
+- `saved_tensors`: All tensor inputs in original order, backward returns gradients for each
+- `saved_data`: Non-tensor inputs (exponent, dim, etc.), not involved in gradient flow
 
 ## Function Class
 
@@ -77,7 +78,6 @@ class Function:
     def apply(cls, *inputs):
         """Auto-create Node (ctx), call forward, build computation graph"""
         ctx = Node()  # auto-create ctx
-        ctx.inputs = inputs  # save original inputs
         
         needs_grad = any(t.requires_grad for t in inputs if isinstance(t, Tensor)) and not no_grad.enabled
         
@@ -115,6 +115,25 @@ class Add(Function):
         _, backward_fn = registry.dispatch("add", grad_output.device)
         grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
         return Tensor(grad_a), Tensor(grad_b)
+```
+
+**ops.py Example (Pow - non-tensor input)**:
+```python
+class Pow(Function):
+    @staticmethod
+    def forward(ctx, a, exponent):
+        ctx.save_for_backward(a)  # only save tensor input
+        ctx.save_data_for_backward(exponent)  # exponent is non-tensor
+        forward_fn, _ = registry.dispatch("pow", a.device)
+        return forward_fn(a.data, exponent)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        a = ctx.saved_tensors[0]
+        exponent = ctx.saved_data[0]
+        _, backward_fn = registry.dispatch("pow", grad_output.device)
+        grad_a, _ = backward_fn(grad_output.data, a.data, exponent)
+        return Tensor(grad_a)  # only return gradient for tensor input
 ```
 
 ## no_grad Implementation
@@ -166,34 +185,35 @@ def backward(self, grad_output):
         
         grads = node.backward_fn.backward(node, grad)
         
-        # Distribute gradients according to original inputs order
-        for i, (inp, g) in enumerate(zip(node.inputs, grads)):
+        # Distribute gradients to saved tensors (order matches backward output)
+        for i, t in enumerate(node.saved_tensors):
+            if not t.requires_grad:
+                continue
+            g = grads[i]
             if g is None:
                 continue
-            if not isinstance(inp, Tensor) or not inp.requires_grad:
-                continue
             
-            if inp.grad_fn is None:  # leaf tensor
-                if inp.grad is None:
-                    inp.grad = g
+            if t.grad_fn is None:  # leaf tensor
+                if t.grad is None:
+                    t.grad = g
                 else:
-                    inp.grad = inp.grad + g
+                    t.grad = t.grad + g
             else:
                 # Non-leaf: propagate to upstream node when ready
-                inp.grad_fn.next.discard(node)
-                if len(inp.grad_fn.next) == 0:
-                    queue.append((inp.grad_fn, g))
+                t.grad_fn.next.discard(node)
+                if len(t.grad_fn.next) == 0:
+                    queue.append((t.grad_fn, g))
         
         # Cleanup references
         node.prev.clear()
         node.leaf.clear()
-        node.inputs = ()
+        node.saved_tensors = ()
 ```
 
 **Key points**:
 - Single BFS: propagate to upstream node when its `next` set becomes empty
-- Use `inputs` to match backward output order (handles non-tensor inputs like exponent)
-- Clean prev/leaf/inputs references after execution
+- saved_tensors order matches backward output order (backward returns gradients only for tensor inputs)
+- Clean prev/leaf/saved_tensors references after execution
 - Gradients accumulate to leaf tensor's grad attribute
 
 ## Tensor Class Changes
