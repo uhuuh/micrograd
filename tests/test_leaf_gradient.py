@@ -22,12 +22,14 @@ def test_non_leaf_tensor_no_gradient():
     assert z.grad is None
 
 def test_leaf_without_requires_grad_no_gradient():
-    """Leaf tensor without requires_grad should not accumulate gradient."""
+    """Calling backward on tensor without requires_grad should raise RuntimeError."""
     x = Tensor([1.0, 2.0, 3.0], requires_grad=False)
     y = x * 2
     z = y.sum()
-    z.backward()
-
+    
+    with pytest.raises(RuntimeError, match="requires_grad"):
+        z.backward()
+    
     assert x.grad is None
 
 def test_shared_input_gradient_accumulation():
