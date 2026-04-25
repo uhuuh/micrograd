@@ -1,6 +1,6 @@
 # micrograd/lenet5.py
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 from micrograd.nn import Module
 
 def conv2d_forward(input, weight, bias, stride=1, padding=0):

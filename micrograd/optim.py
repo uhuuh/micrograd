@@ -1,7 +1,7 @@
 # micrograd/optim.py
 import random
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 
 class AdamW:
     def __init__(self, parameters, lr=0.001, weight_decay=0.01,

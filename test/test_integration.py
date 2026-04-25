@@ -1,6 +1,6 @@
 # test/test_integration.py
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 from micrograd.optim import AdamW
 from micrograd.data import DataLoader, Dataset
 from micrograd.lenet5 import LeNet5

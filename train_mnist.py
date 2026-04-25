@@ -2,7 +2,7 @@
 """Train LeNet-5 on MNIST using micrograd."""
 
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 from micrograd.optim import AdamW
 from micrograd.data import DataLoader, Dataset, load_mnist
 from micrograd.lenet5 import LeNet5

@@ -1,6 +1,6 @@
 # test/test_lenet5.py
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 from micrograd.lenet5 import Conv2d, AvgPool2d, LeNet5
 
 def test_conv2d_forward():

@@ -1,5 +1,5 @@
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 
 def test_tensor_creation():
     t = Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))

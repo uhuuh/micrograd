@@ -1,6 +1,6 @@
 # test/test_optim.py
 import numpy as np
-from micrograd.engine import Tensor
+from micrograd.tensor import Tensor
 from micrograd.optim import AdamW
 
 def test_adamw_initialization():
