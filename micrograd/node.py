@@ -25,11 +25,11 @@ class Node:
     @classmethod
     def apply(cls, *inputs):
         from .tensor import Tensor
-        from . import no_grad
+        from .no_grad import no_grad
         
         ctx = cls()
         
-        needs_grad = any(isinstance(t, Tensor) and t.requires_grad for t in inputs) and not no_grad.no_grad.enabled
+        needs_grad = any(isinstance(t, Tensor) and t.requires_grad for t in inputs) and not no_grad.enabled
         
         output_storage = cls.forward(ctx, *inputs)
         output = Tensor(output_storage, requires_grad=needs_grad)
