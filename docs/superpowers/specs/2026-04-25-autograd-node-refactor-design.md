@@ -2,7 +2,7 @@
 
 ## Overview
 
-Refactor the backward propagation to separate computation graph nodes (Node) from computation logic (Function). This enables:
+Refactor the backward propagation to separate computation graph nodes (Node) from computation logic. Function inherits Node, enabling:
 - Intermediate tensors to be released by Python GC when not needed for backward
 - Single BFS traversal using prev/next graph structure
 - Automatic graph cleanup after backward
@@ -18,28 +18,29 @@ Refactor the backward propagation to separate computation graph nodes (Node) fro
 │    grad=None     backward    backward      grad_fn=Node     │
 │                  (backward)  (backward)                     │
 │                                                              │
-│   Node stores graph structure, Function stores compute logic │
+│   Node: graph structure (prev/next/leaf), saved tensors     │
+│   Function: extends Node, adds forward/backward logic       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Separation Principle**:
-- **Node**: Only stores graph structure (prev, next, leaf, backward_fn) and saved tensors for backward
-- **Function**: Only stores forward/backward compute logic, no graph structure
-- **Tensor**: Only stores data and grad, grad_fn points to Node (if operation output)
+**Key Design**:
+- **Node**: Base class storing graph structure and tensors necessary for backward
+- **Function**: Extends Node, adds forward/backward compute logic
+- **Tensor**: Only stores data and grad, grad_fn points to Function instance
 
-## Node Class
+## Node Class (Base)
 
 ```python
 class Node:
     def __init__(self):
-        self.saved_tensors = ()      # tensor inputs (order matches backward output)
-        self.saved_data = []         # non-tensor inputs (exponent, dim, keepdim, etc.)
+        self.saved_tensors = ()      # tensors NECESSARY for backward only
+        self.saved_data = []         # non-tensor data (exponent, dim, etc.)
         self.prev: set[Node] = set() # upstream nodes (input grad_fn)
         self.next: set[Node] = set() # downstream nodes (output grad_fn)
         self.leaf: set[Tensor] = set() # leaf tensors (inputs without grad_fn)
-        self.backward_fn = None      # Function class (Add, Mul, etc.)
     
     def save_for_backward(self, *tensors):
+        """Save only tensors NEEDED for backward computation"""
         self.saved_tensors = tensors
     
     def save_data_for_backward(self, *data):
@@ -47,37 +48,39 @@ class Node:
     
     def backward(self, grad_output):
         """Single BFS traversal, cleaning references after execution"""
-        # See implementation details below
+        # Implemented in Function subclass
+        raise NotImplementedError
 ```
 
 **prev vs leaf**:
-- `prev`: Input tensor has `grad_fn` → points to that Node
+- `prev`: Input tensor has `grad_fn` → points to that Function
 - `leaf`: Input tensor has no `grad_fn` (leaf tensor with requires_grad=True)
 
 **next**: Points to downstream nodes, used to determine when a node can execute (when next is empty)
 
-**saved_tensors/saved_data separation**:
-- `saved_tensors`: All tensor inputs in original order, backward returns gradients for each
-- `saved_data`: Non-tensor inputs (exponent, dim, etc.), not involved in gradient flow
+**saved_tensors principle**: Only save tensors that are ACTUALLY used in backward computation:
+- Add.backward: doesn't need a, b (grad_a = grad_output)
+- Mul.backward: needs a, b (grad_a = b * grad_output)
+- ReLU.backward: needs a (mask where a > 0)
 
-## Function Class
+## Function Class (Extends Node)
 
 ```python
-class Function:
+class Function(Node):
     @staticmethod
-    def forward(ctx: Node, *inputs) -> Storage:
-        """ctx (Node) auto-created, save necessary data to ctx"""
+    def forward(ctx, *inputs) -> Storage:
+        """ctx auto-created (self), save necessary data for backward"""
         raise NotImplementedError
     
     @staticmethod
-    def backward(ctx: Node, grad_output) -> tuple[Tensor | None, ...]:
-        """ctx auto-passed, backward retrieves saved data from ctx"""
+    def backward(ctx, grad_output) -> tuple[Tensor, ...]:
+        """ctx auto-passed (self), return gradients for tensor inputs"""
         raise NotImplementedError
     
     @classmethod
     def apply(cls, *inputs):
-        """Auto-create Node (ctx), call forward, build computation graph"""
-        ctx = Node()  # auto-create ctx
+        """Auto-create Function instance, call forward, build graph"""
+        ctx = cls()  # Function instance (also a Node)
         
         needs_grad = any(t.requires_grad for t in inputs if isinstance(t, Tensor)) and not no_grad.enabled
         
@@ -86,7 +89,6 @@ class Function:
         
         if needs_grad:
             output.grad_fn = ctx
-            ctx.backward_fn = cls
             
             for t in inputs:
                 if not isinstance(t, Tensor) or not t.requires_grad:
@@ -98,42 +100,33 @@ class Function:
                     t.grad_fn.next.add(ctx)
         
         return output
-```
-
-**ops.py Example (Add)**:
-```python
-class Add(Function):
-    @staticmethod
-    def forward(ctx, a, b):
-        ctx.save_for_backward(a, b)
-        forward_fn, _ = registry.dispatch("add", a.device)
-        return forward_fn(a.data, b.data)
     
-    @staticmethod
-    def backward(ctx, grad_output):
-        a, b = ctx.saved_tensors
-        _, backward_fn = registry.dispatch("add", grad_output.device)
-        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
-        return Tensor(grad_a), Tensor(grad_b)
-```
-
-**ops.py Example (Pow - non-tensor input)**:
-```python
-class Pow(Function):
-    @staticmethod
-    def forward(ctx, a, exponent):
-        ctx.save_for_backward(a)  # only save tensor input
-        ctx.save_data_for_backward(exponent)  # exponent is non-tensor
-        forward_fn, _ = registry.dispatch("pow", a.device)
-        return forward_fn(a.data, exponent)
-    
-    @staticmethod
-    def backward(ctx, grad_output):
-        a = ctx.saved_tensors[0]
-        exponent = ctx.saved_data[0]
-        _, backward_fn = registry.dispatch("pow", grad_output.device)
-        grad_a, _ = backward_fn(grad_output.data, a.data, exponent)
-        return Tensor(grad_a)  # only return gradient for tensor input
+    def backward(self, grad_output):
+        """Node.backward: single BFS traversal"""
+        queue = deque([(self, grad_output)])
+        
+        while queue:
+            node, grad = queue.popleft()
+            
+            grads = type(node).backward(node, grad)
+            
+            for i, t in enumerate(node.saved_tensors):
+                if not t.requires_grad or grads[i] is None:
+                    continue
+                
+                if t.grad_fn is None:  # leaf
+                    if t.grad is None:
+                        t.grad = grads[i]
+                    else:
+                        t.grad = t.grad + grads[i]
+                else:
+                    t.grad_fn.next.discard(node)
+                    if len(t.grad_fn.next) == 0:
+                        queue.append((t.grad_fn, grads[i]))
+            
+            node.prev.clear()
+            node.leaf.clear()
+            node.saved_tensors = ()
 ```
 
 ## no_grad Implementation
@@ -173,48 +166,75 @@ def inference(x):
 
 **Function.apply checks**: `needs_grad = ... and not no_grad.enabled`
 
-## Node.backward Implementation
+## ops.py Examples
 
+**Add - backward doesn't need inputs**:
 ```python
-def backward(self, grad_output):
-    """Single BFS traversal with reference cleanup"""
-    queue = deque([(self, grad_output)])
+class Add(Function):
+    @staticmethod
+    def forward(ctx, a, b):
+        # ctx.save_for_backward() - nothing needed for backward
+        forward_fn, _ = registry.dispatch("add", a.device)
+        return forward_fn(a.data, b.data)
     
-    while queue:
-        node, grad = queue.popleft()
-        
-        grads = node.backward_fn.backward(node, grad)
-        
-        # Distribute gradients to saved tensors (order matches backward output)
-        for i, t in enumerate(node.saved_tensors):
-            if not t.requires_grad:
-                continue
-            g = grads[i]
-            if g is None:
-                continue
-            
-            if t.grad_fn is None:  # leaf tensor
-                if t.grad is None:
-                    t.grad = g
-                else:
-                    t.grad = t.grad + g
-            else:
-                # Non-leaf: propagate to upstream node when ready
-                t.grad_fn.next.discard(node)
-                if len(t.grad_fn.next) == 0:
-                    queue.append((t.grad_fn, g))
-        
-        # Cleanup references
-        node.prev.clear()
-        node.leaf.clear()
-        node.saved_tensors = ()
+    @staticmethod
+    def backward(ctx, grad_output):
+        # grad_a = grad_output, grad_b = grad_output
+        return grad_output, grad_output
 ```
 
-**Key points**:
-- Single BFS: propagate to upstream node when its `next` set becomes empty
-- saved_tensors order matches backward output order (backward returns gradients only for tensor inputs)
-- Clean prev/leaf/saved_tensors references after execution
-- Gradients accumulate to leaf tensor's grad attribute
+**Mul - backward needs inputs**:
+```python
+class Mul(Function):
+    @staticmethod
+    def forward(ctx, a, b):
+        ctx.save_for_backward(a, b)  # need a, b for backward
+        forward_fn, _ = registry.dispatch("mul", a.device)
+        return forward_fn(a.data, b.data)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, b = ctx.saved_tensors
+        _, backward_fn = registry.dispatch("mul", grad_output.device)
+        grad_a, grad_b = backward_fn(grad_output.data, a.data, b.data)
+        return Tensor(grad_a), Tensor(grad_b)
+```
+
+**ReLU - backward needs input**:
+```python
+class ReLU(Function):
+    @staticmethod
+    def forward(ctx, a):
+        ctx.save_for_backward(a)  # need a to compute mask
+        forward_fn, _ = registry.dispatch("relu", a.device)
+        return forward_fn(a.data)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        a = ctx.saved_tensors[0]
+        _, backward_fn = registry.dispatch("relu", grad_output.device)
+        grad_a = backward_fn(grad_output.data, a.data)
+        return Tensor(grad_a)
+```
+
+**Pow - non-tensor input**:
+```python
+class Pow(Function):
+    @staticmethod
+    def forward(ctx, a, exponent):
+        ctx.save_for_backward(a)  # only save tensor
+        ctx.save_data_for_backward(exponent)  # exponent saved separately
+        forward_fn, _ = registry.dispatch("pow", a.device)
+        return forward_fn(a.data, exponent)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        a = ctx.saved_tensors[0]
+        exponent = ctx.saved_data[0]
+        _, backward_fn = registry.dispatch("pow", grad_output.device)
+        grad_a, _ = backward_fn(grad_output.data, a.data, exponent)
+        return Tensor(grad_a)
+```
 
 ## Tensor Class Changes
 
