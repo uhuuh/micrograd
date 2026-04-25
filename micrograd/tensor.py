@@ -99,7 +99,7 @@ class Tensor:
             raise RuntimeError("cannot call backward on leaf tensor (no grad_fn)")
         
         grad = Tensor(np.ones_like(self._storage.numpy()), copy=False)
-        self.grad_fn.backward(grad)
+        self.grad_fn.backward_loop(grad)
         self.grad_fn = None
 
 

@@ -1,11 +1,11 @@
 from collections import deque
 
-class Node:
+class Function:
     def __init__(self):
         self.saved_tensors = ()
         self.saved_data = []
-        self.prev: set[Node] = set()
-        self.next: set[Node] = set()
+        self.prev: set[Function] = set()
+        self.next: set[Function] = set()
         self.leaf: set['Tensor'] = set()
     
     def save_for_backward(self, *tensors):
@@ -19,7 +19,7 @@ class Node:
         raise NotImplementedError
     
     @staticmethod
-    def _backward(ctx, grad_output):
+    def backward(ctx, grad_output):
         raise NotImplementedError
     
     @classmethod
@@ -48,17 +48,17 @@ class Node:
         
         return output
     
-    def backward(self, grad_output):
+    def backward_loop(self, grad_output):
         from .tensor import Tensor
         
         queue = deque([(self, grad_output)])
         
         while queue:
-            node, grad = queue.popleft()
+            fn, grad = queue.popleft()
             
-            grads = type(node)._backward(node, grad)
+            grads = type(fn).backward(fn, grad)
             
-            for i, t in enumerate(node.saved_tensors):
+            for i, t in enumerate(fn.saved_tensors):
                 if not t.requires_grad:
                     continue
                 g = grads[i] if i < len(grads) else None
@@ -71,10 +71,10 @@ class Node:
                     else:
                         t.grad = Tensor(t.grad.data.numpy() + g.data.numpy(), copy=False)
                 else:
-                    t.grad_fn.next.discard(node)
+                    t.grad_fn.next.discard(fn)
                     if len(t.grad_fn.next) == 0:
                         queue.append((t.grad_fn, g))
             
-            node.prev.clear()
-            node.leaf.clear()
-            node.saved_tensors = ()
+            fn.prev.clear()
+            fn.leaf.clear()
+            fn.saved_tensors = ()

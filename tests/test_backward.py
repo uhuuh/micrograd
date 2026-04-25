@@ -2,24 +2,25 @@ import pytest
 import numpy as np
 from micrograd.tensor import Tensor
 
-
 def test_tensor_backward_requires_grad():
-    t = Tensor([1.0, 2.0], requires_grad=False)
-    with pytest.raises(RuntimeError, match="requires_grad"):
+    t = Tensor([1.0], requires_grad=False)
+    
+    with pytest.raises(RuntimeError, match="requires_grad=False"):
         t.backward()
-
 
 def test_tensor_backward_leaf_error():
-    t = Tensor([1.0, 2.0], requires_grad=True)
-    with pytest.raises(RuntimeError, match="leaf"):
+    t = Tensor([1.0], requires_grad=True)
+    
+    with pytest.raises(RuntimeError, match="leaf tensor"):
         t.backward()
 
-
 def test_tensor_backward_on_output():
-    a = Tensor([2.0], requires_grad=True)
-    b = Tensor([3.0], requires_grad=True)
+    from micrograd.function import Function
+    from micrograd.ops import Add
     
-    out = a + b
+    a = Tensor([1.0], requires_grad=True)
+    b = Tensor([2.0], requires_grad=True)
+    out = Add.apply(a, b)
     
     out.backward()
     
