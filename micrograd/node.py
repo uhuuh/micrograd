@@ -19,7 +19,7 @@ class Node:
         raise NotImplementedError
     
     @staticmethod
-    def backward(ctx, grad_output):
+    def _backward(ctx, grad_output):
         raise NotImplementedError
     
     @classmethod
